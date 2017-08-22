@@ -2,8 +2,13 @@ module Main where
 import System.Environment
 import Text.ParserCombinators.Parsec hiding (spaces)
 import Control.Monad
+import Control.Monad.Error
+
 main :: IO ()
-main = getArgs >>= putStrLn . show . eval .  readExpr . (!! 0)
+main = do
+	args <- getArgs
+ 	evaled <- return $ liftM show $ readExpr (args !! 0) >>= eval
+	putStrLn $ extractValue $ trapError evaled 
 
 symbol :: Parser Char
 symbol = oneOf "!@#$%^&*+_-=<?>~:/|"
@@ -12,10 +17,10 @@ spaces :: Parser ()
 spaces = skipMany1 space
 
 -- input is the parameter 
-readExpr :: String -> LispVal
+readExpr :: String -> ThrowsError  LispVal
 readExpr input = case parse parseExpr "lisp" input of 
-  	Left err -> String  $ "No match: " ++ show err
-	Right val -> val 
+  	Left err -> throwError $ Parser err
+	Right val -> return val 
 -- What values a data type might have, seperated via |           
   -- each constructor defines the construcor name and the value type
 data LispVal = Atom String
@@ -92,17 +97,18 @@ unwordsList = unwords . map showVal
 
 instance Show LispVal where show = showVal
 
-eval :: LispVal -> LispVal
-eval val@(String _) = val 
-eval val@(Number _) = val
-eval val@(Bool _) = val
-eval (List [Atom "quote", val]) = val
-eval (List (Atom func : args)) = apply func $ map eval args
+eval :: LispVal ->  ThrowsError LispVal
+eval val@(String _) = return val 
+eval val@(Number _) = return val
+eval val@(Bool _) = return  val
+eval (List [Atom "quote", val]) = return val
+eval (List (Atom func : args)) = mapM eval args >>= apply func
+eval badForm = throwError $ BadSpecialForm "unrecognized form " badForm
 
-apply :: String -> [LispVal] -> LispVal
-apply func args = maybe (Bool False) ($ args)  $ lookup func primitives
+apply :: String -> [LispVal] -> ThrowsError LispVal
+apply func args = maybe (throwError $ NotFunction "Not a recognozed function" func ) ($ args)  $ lookup func primitives
 
-primitives :: [(String, [LispVal] -> LispVal)]
+primitives :: [(String, [LispVal] -> ThrowsError LispVal)]
 primitives = [("+", numericBinop (+)),
 	    ("-", numericBinop (-)),
 	    ("*", numericBinop (*)),
@@ -111,20 +117,20 @@ primitives = [("+", numericBinop (+)),
 	    ("quotient", numericBinop quot),
 	    ("remainder", numericBinop rem)]
 
-numericBinop :: (Integer -> Integer -> Integer) -> [LispVal] -> LispVal
-numericBinop op params =  Number  $ foldl1 op $ map  unpackNum params
+numericBinop :: (Integer -> Integer -> Integer) -> [LispVal] -> ThrowsError LispVal
+numericBinop op singleVal@[_] = throwError $ NumArgs 2 singleVal
+numericBinop op params =  mapM  unpackNum params >>= return . Number . foldl1 op
 
-unpackNum :: LispVal -> Integer
-unpackNum (Number n) = n 
+unpackNum :: LispVal -> ThrowsError Integer
+unpackNum (Number n) = return n 
 unpackNum (String n) = let parsed = reads n in 
 			if null parsed 
-				then 0
-				else fst $ parsed !! 0
+				then throwError $ TypeMismatch "Number " $ String n
+				else return $ fst $ parsed !! 0
 unpackNum (List [n]) = unpackNum n
-unpackNum _ = 0
+unpackNum notNum = throwError $ TypeMismatch "Number " notNum
 
 
-import Control.Monad.Error
 
 data LispError = NumArgs Integer [LispVal]
 	| TypeMismatch String LispVal	
@@ -135,11 +141,11 @@ data LispError = NumArgs Integer [LispVal]
 	| Default String
 
 showError :: LispError -> String
-showError (Unboundvar message varname) = message ++ ": " ++ varname
+showError (UnboundVar message varname) = message ++ ": " ++ varname
 showError (BadSpecialForm message form) = message ++ ": " ++ show form
 showError (TypeMismatch expected typeValfound) = "Type mismatch , expected type :" ++ expected ++  "typevalue found "++ show typeValfound
 showError (NotFunction message func) = message ++ ": " ++ show func
-showError (NumArgs expected foundList) = "Incorrect number of arguments ,expected " ++ show expected ++ " found  " ++ show $ length foundLists
+showError (NumArgs expected foundList) = "Incorrect number of arguments ,expected " ++ show expected ++ " found  " ++  unwordsList foundList
 showError (Parser parseError) = "Parse error at : "++ show parseError 
 
 instance Show LispError where show = showError
