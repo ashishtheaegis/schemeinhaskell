@@ -3,12 +3,23 @@ import System.Environment
 import Text.ParserCombinators.Parsec hiding (spaces)
 import Control.Monad
 import Control.Monad.Error
+import System.IO hiding (try)
+--main :: IO ()
+--main = do
+--	args <- getArgs
+ --	evaled <- return $ liftM show $ readExpr (args !! 0) >>= eval
+--	putStrLn $ extractValue $ trapError evaled 
+
+
 
 main :: IO ()
-main = do
-	args <- getArgs
- 	evaled <- return $ liftM show $ readExpr (args !! 0) >>= eval
-	putStrLn $ extractValue $ trapError evaled 
+main = do args <- getArgs
+          case length args of
+               0 -> runRepl
+               1 -> evalAndPrint $ args !! 0
+               otherwise -> putStrLn "Program takes only 0 or 1 argument"
+
+
 
 symbol :: Parser Char
 symbol = oneOf "!@#$%^&*+_-=<?>~:/|"
@@ -103,14 +114,14 @@ eval val@(Number _) = return val
 eval val@(Bool _) = return  val
 eval (List [Atom "quote", val]) = return val
 eval (List (Atom func : args)) = mapM eval args >>= apply func
-eval (List [Atom "if", pred, conseq, alt]) = 
-	do result <- eval pred
+eval (List [Atom "if", pred, conseq, alt]) = do 
+		result <- eval pred
 		case result of 
 			Bool False -> eval alt
 			otherwise -> eval conseq	 
 eval badForm = throwError $ BadSpecialForm "unrecognized form " badForm
 
-car :: [Lispval] -> ThrowsError LispVal
+car :: [LispVal] -> ThrowsError LispVal
 car [List (x : xs)] = return x
 car [DottedList (x : xs) _] = return x
 car [badargs] = throwError $ TypeMismatch "pair" badargs
@@ -124,13 +135,13 @@ cdr [badArg]                = throwError $ TypeMismatch "pair" badArg
 cdr badArgList              = throwError $ NumArgs 1 badArgList	
 
 cons :: [LispVal] -> ThrowsError LispVal
-cons [x1,  List []] = return $ List x1
+cons [x1,  List []] = return $ List [x1]
 cons [x,  List xs ] = return $ List $ x : xs
-cons (x, DottedList xs xslast) = return $ DottedList (x : xs) xslast 
-cons [x1, x2] = retrun $ DottedList [x1] x2
+cons ([x, DottedList xs xslast]) = return $ DottedList (x : xs) xslast 
+cons [x1, x2] = return $ DottedList [x1] x2
 cons badArgList = throwError $ NumArgs 2 badArgList
 
-eqv :: [LispVal] -> ThrowsError Lispval
+eqv :: [LispVal] -> ThrowsError LispVal
 eqv [(Bool arg1), (Bool arg2)] = return $ Bool $ arg1 == arg2
 eqv [(Number arg1), (Number arg2)]         = return $ Bool $ arg1 == arg2
 eqv [(String arg1), (String arg2)]         = return $ Bool $ arg1 == arg2
@@ -144,7 +155,7 @@ eqv [(List arg1), (List arg2)] =  return $ Bool  $ (length arg1 == length arg2) 
 eqv [_, _] = return $ Bool False
 eqv badArgList = throwError $ NumArgs 2 badArgList
 
-data Unpacker = forall a. Eq a => AnyUnpacker (Lispval -> ThrowsError a)
+data Unpacker = forall a. Eq a => AnyUnpacker (LispVal -> ThrowsError a)
 
 unpackEquals :: LispVal -> LispVal -> Unpacker -> ThrowsError Bool
 unpackEquals arg1 arg2 (AnyUnpacker unpacker) = 
@@ -184,7 +195,15 @@ primitives = 	[("+", numericBinop (+)),
 		("string<?", strBoolBinop (<)),
 		("string>?", strBoolBinop (>)),
 		("string<=?", strBoolBinop (<=)),
-		("string>=?", strBoolBinop (>=))]
+		("string>=?", strBoolBinop (>=)),
+		("car", car),
+		("cdr", cdr),
+		("cons", cons),
+		("eq?", eqv),
+		("eqv?", eqv),
+		("equal?", equal)]
+
+
 
 boolBinop :: (LispVal -> ThrowsError a) -> (a -> a -> Bool) -> [LispVal] -> ThrowsError LispVal
 boolBinop unpacker op args = if length args /= 2 
@@ -255,6 +274,30 @@ trapError action = catchError action (return . show)
 
 extractValue :: ThrowsError a -> a 
 extractValue  (Right val) = val 
+
+flushStr :: String -> IO ()
+flushStr str = 	putStr str >> hFlush stdout
+
+readPrompt :: String -> IO String
+readPrompt prompt = flushStr prompt >> getLine
+
+evalString :: String -> IO String
+evalString expr =  return $ extractValue $ trapError (liftM show $ readExpr expr >>= eval)
+
+evalAndPrint :: String -> IO ()
+evalAndPrint expr = evalString expr >>= putStrLn
+
+until_ :: Monad m => (a -> Bool) -> m a -> (a -> m ()) -> m ()
+until_ pred prompt action = do
+	result <- prompt
+	if pred result
+		then return ()
+		else action result >> until_ pred prompt action
+
+
+runRepl :: IO ()
+runRepl = until_ (== "quit") (readPrompt "Lisp>>> ") evalAndPrint
+
 
 
 
